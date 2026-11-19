@@ -16,9 +16,13 @@
 #   python-shell.bat   command prompt with the bundle's Python
 #   builder\           this script, to rebuild or update the bundle later
 #
-# Run it again on an existing bundle folder to update it: the clones are kept,
-# the packages are re-synced, and the last choices (bundle-config.json) are the
-# defaults. Without questions: add -Yes (and the parameters below as needed).
+# Run it again on an existing bundle folder to update it: the clones get a
+# git pull (a clone with local changes or local commits is left as it is), all
+# packages are resolved again to their newest versions (git branches such as the
+# pertzlab pymmcore-widgets build too), and the last choices (bundle-config.json)
+# are the defaults. -NoPull keeps the clones, -KeepLock keeps the package
+# versions of the last build. Without questions: add -Yes (and the parameters
+# below as needed).
 #
 # Needs: git and uv on PATH (uv: https://docs.astral.sh/uv/).
 param(
@@ -40,6 +44,8 @@ param(
     # What git clones of faro and the lab package: main (only the main branch,
     # default) | shallow (only the latest commit of main) | all (every branch)
     [ValidateSet("", "main", "shallow", "all")][string]$Clone = "",
+    [switch]$NoPull,                      # existing clones: no git pull
+    [switch]$KeepLock,                    # keep the package versions of env\uv.lock (no re-resolve)
     [switch]$Yes                          # no questions: defaults + parameters
 )
 # On an error: show it, and keep a window that "Run with PowerShell" opened
@@ -184,9 +190,41 @@ $cloneArgs = @(switch ($Clone) {
     "main"    { "--single-branch" }
     "shallow" { "--single-branch", "--depth", "1" }
 })
+# Update an existing clone. Never overwrites work: a clone with local changes
+# or with commits that are not on GitHub is left as it is (with a warning).
+function Update-Clone([string]$name, [string]$dir) {
+    $before = (git -C $dir rev-parse --short HEAD)
+    if (git -C $dir status --porcelain --untracked-files=no) {
+        Write-Host "$name : local changes, not updated (still $before)" -ForegroundColor Yellow
+        return
+    }
+    $branch = (git -C $dir rev-parse --abbrev-ref HEAD)
+    if ($branch -eq "HEAD") {
+        Write-Host "$name : no branch checked out (detached), not updated (still $before)" -ForegroundColor Yellow
+        return
+    }
+    if ((git -C $dir rev-parse --is-shallow-repository) -eq "true") {
+        # Shallow clone: fetch only the newest commit and move to it
+        git -C $dir fetch --depth 1 origin $branch
+        if ($LASTEXITCODE) { Write-Host "$name : git fetch failed, not updated (still $before)" -ForegroundColor Yellow; return }
+        git -C $dir reset --hard FETCH_HEAD | Out-Null
+    } else {
+        git -C $dir pull --ff-only
+        if ($LASTEXITCODE) {
+            Write-Host "$name : git pull --ff-only failed (local commits or no network), not updated (still $before)" -ForegroundColor Yellow
+            return
+        }
+    }
+    $after = (git -C $dir rev-parse --short HEAD)
+    if ($after -eq $before) { Write-Host "$name : up to date ($branch $after)" }
+    else { Write-Host "$name : updated $before -> $after ($branch)" }
+}
 foreach ($r in @(@("faro", $FaroUrl, $FaroBranch), @($LabDir, $LabUrl, $LabBranch))) {
     $dir = "$Bundle\$($r[0])"
-    if (Test-Path "$dir\.git") { Write-Host "$($r[0]): already cloned, left as it is" }
+    if (Test-Path "$dir\.git") {
+        if ($NoPull) { Write-Host "$($r[0]): already cloned, left as it is (-NoPull)" }
+        else { Update-Clone $r[0] $dir }
+    }
     elseif (Test-Path $dir) { throw "$dir exists but is not a git clone" }
     else { git clone --branch $r[2] @cloneArgs $r[1] $dir; Check "git clone $($r[0])" }
 }
@@ -260,7 +298,8 @@ Write-Host ""
 Write-Host "Bundle      : $Bundle"
 Write-Host "faro        : $FaroUrl ($FaroBranch)"
 Write-Host "Lab package : $LabPkg  $LabUrl ($LabBranch)"
-Write-Host "Git clones  : $(if ($needClone) { $Clone } else { 'already there, kept' })"
+Write-Host "Git clones  : $(if ($needClone) { $Clone } elseif ($NoPull) { 'already there, kept (-NoPull)' } else { 'already there, updated (git pull)' })"
+Write-Host "Packages    : $(if ($KeepLock -and (Test-Path "$Bundle\env\uv.lock")) { 'versions of the last build (-KeepLock)' } else { 'newest versions (resolved again)' })"
 Write-Host "Plugins     : $($Plugins -join ', ')"
 Write-Host "More pkgs   : $(if ($ExtraPackages) { $ExtraPackages -join ', ' } else { '-' })"
 Write-Host "pymmcore    : $MMApi"
@@ -343,9 +382,24 @@ $env:UV_PYTHON_PREFERENCE = "only-system"
 $env:UV_LINK_MODE = "copy"
 Push-Location "$Bundle\env"
 try {
-    & $uv lock; Check "uv lock"
+    # --upgrade: resolve every package again, so a git branch (e.g. the pertzlab
+    # pymmcore-widgets build) is taken at its newest commit, not the one an
+    # existing uv.lock pinned. -KeepLock keeps the versions of the last build.
+    if ($KeepLock) { & $uv lock } else { & $uv lock --upgrade }
+    Check "uv lock"
     & $uv sync --frozen; Check "uv sync"
 } finally { Pop-Location }
+
+# What went into this bundle (shown at the end and written to README.txt)
+function Commit-Of([string]$dir) { (git -C $dir log -1 --format="%h %cs %s") }
+$faroCommit = Commit-Of "$Bundle\faro"
+$labCommit = Commit-Of "$Bundle\$LabDir"
+$lockText = Get-Content "$Bundle\env\uv.lock" -Raw
+$widgets = if ($lockText -match 'pymmcore-widgets\.git\?branch=([^#"]+)#([0-9a-f]{40})') {
+    "git $($Matches[1]) $($Matches[2].Substring(0, 7))"
+} elseif ($lockText -match '(?m)^name = "pymmcore-widgets"\r?\nversion = "([^"]+)"') {
+    "PyPI $($Matches[1])"
+} else { "?" }
 
 # ---------------------------------------------------------------- 6. launchers + helper scripts
 $src = "$PSScriptRoot\files"
@@ -430,6 +484,9 @@ Contents
   Plugins:          $($Plugins -join ', ')$(if ($ExtraPackages) { "`n  More packages:    $($ExtraPackages -join ', ')" })
   pymmcore:         $MMApi$(if ($needTorch) { "`n  torch:            $Torch" })
   Microscopes:      $($scopes -join ', ')
+  faro:             $faroCommit
+  $($LabDir.PadRight(17)) $labCommit
+  pymmcore-widgets: $widgets
 
 Install on the microscope PC (not in the bundle)
   - Micro-Manager 2.0 with the matching device interface, either installed
@@ -450,9 +507,11 @@ Start
   Check the bundle:            python\python.exe scripts\check_bundle.py
 
 Update / rebuild (online)
-  git pull in faro\ and $LabDir\. If dependencies changed, or to change plugins:
-    double-click builder\build-bundle.bat
-  (the last choices are the defaults)
+  double-click builder\build-bundle.bat (the last choices are the defaults).
+  It runs git pull in faro\ and $LabDir\ (a clone with local changes or local
+  commits is left as it is) and resolves all packages again to their newest
+  versions, the pymmcore-widgets build included. For the same package versions
+  as this build: build-bundle.ps1 -KeepLock. Without git pull: -NoPull.
   python\python.exe finds models\ and a Micro-Manager* folder itself, however
   it is started (VS Code, Jupyter, .bat files): scripts\faro_bundle_env.py.
   Variables that are already set (by you or the system) win.
@@ -464,6 +523,9 @@ Write-Host "`nChecking the bundle ..."
 $ok = -not $LASTEXITCODE
 $gb = (Get-ChildItem $Bundle -Recurse -File -Force | Measure-Object Length -Sum).Sum / 1GB
 Write-Host ("`nBundle {0} in {1}. Size: {2:N1} GB" -f $(if ($ok) { "built" } else { "built WITH PROBLEMS (see above)" }), $Bundle, $gb)
+Write-Host "  faro:             $faroCommit"
+Write-Host "  $($LabDir.PadRight(17)) $labCommit"
+Write-Host "  pymmcore-widgets: $widgets"
 
 # ---------------------------------------------------------------- 9. self-extracting .exe
 if ($Package -ne "none") {
