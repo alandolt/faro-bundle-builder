@@ -15,6 +15,11 @@ set "MICROSCOPE="
 set "B=%~dp0"
 if "%B:~-1%"=="\" set "B=%B:~0,-1%"
 call "%B%\scripts\bundle-env.bat" "%B%"
+rem Double-clicked (cmd /c ...): hide this console once the napari window is
+rem open. A cmd window you typed the command in stays visible.
+set "FARO_HIDE_CONSOLE="
+set "CL=%CMDCMDLINE:"=%"
+if /i not "%CL: /c =%"=="%CL%" set "FARO_HIDE_CONSOLE=1"
 
 if not "%~1"=="" goto run
 set "SCOPE=%MICROSCOPE%"
@@ -24,15 +29,19 @@ echo Microscopes:
 set /p "SCOPE=Which microscope? "
 if "%SCOPE%"=="" goto end
 :start
-"%PY%" -P -m faro.napari_launcher %SCOPE%
+"%PY%" -P "%B%\scripts\hide_console.py" faro.napari_launcher %SCOPE%
 goto check
 
 :run
-rem python -m instead of faro-napari.exe: the .exe stores an absolute path.
+rem hide_console.py runs "python -m faro.napari_launcher" (not faro-napari.exe:
+rem the .exe stores an absolute path) and hides the console when napari is open.
 rem -P: never import a "faro" folder from the current directory instead of the bundle's.
-"%PY%" -P -m faro.napari_launcher %*
+"%PY%" -P "%B%\scripts\hide_console.py" faro.napari_launcher %*
 
 :check
-if errorlevel 1 pause
+rem On an error, show the console again so the message can be read.
+if not errorlevel 1 goto end
+"%PY%" -P "%B%\scripts\hide_console.py" --show
+pause
 :end
 endlocal
