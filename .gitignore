@@ -1,0 +1,11 @@
+# Only the builder is tracked. Built bundles (<lab>-offline\) and their
+# self-extracting .exe files are ignored, whatever their name.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/build-bundle.bat
+!/build-bundle.ps1
+!/files/
+__pycache__/
+*.pyc
