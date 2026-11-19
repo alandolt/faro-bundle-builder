@@ -51,6 +51,16 @@ if importlib.util.find_spec("napari_convpaint"):
     ckpt = list((bundle / "models/torch").rglob("*.pt*"))
     check("convpaint weights (models\\torch)", ckpt, f"{len(ckpt)} files")
 
+# napari plugins (what napari.bat / faro-napari.bat offer)
+from npe2 import PluginManager  # noqa: E402
+
+pm = PluginManager.instance()
+pm.discover()
+plugins = sorted(m.name for m in pm.iter_manifests())
+check("napari plugins", plugins, " ".join(plugins))
+if importlib.util.find_spec("napari_tiff"):
+    check("napari-tiff registered", "napari-tiff" in plugins)
+
 # Offline icons
 check("icon module installed", (sp / "faro_offline_icons.pth").exists())
 check("icon module active", "faro_offline_icons" in sys.modules)

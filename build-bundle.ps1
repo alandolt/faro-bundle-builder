@@ -12,6 +12,7 @@
 #   faro\  <lab>\      git clones, installed editable (code changes apply directly)
 #   models\            cellpose-SAM, convpaint weights, GUI icon sets (offline)
 #   faro-napari.bat    start napari + Micro-Manager on a microscope
+#   napari.bat         plain napari with the plugins (no microscope)
 #   python-shell.bat   command prompt with the bundle's Python
 #   builder\           this script, to rebuild or update the bundle later
 #
@@ -65,6 +66,7 @@ $Catalog = @(
     @{ Key = "cellpose";         Label = "cellpose-SAM       segmentation (napari-cellposesam, cellpose 4, model cpsam_v2)"; Pkgs = @("napari-cellposesam", "cellpose>=4.1.1", "opencv-python"); Extras = @(); Torch = $true }
     @{ Key = "convpaint";        Label = "convpaint          pixel classifier (napari-convpaint, default feature model)";    Pkgs = @("napari-convpaint", "scipy"); Extras = @(); Torch = $true }
     @{ Key = "skimage";          Label = "skimage            scikit-image filters in napari (napari-skimage)";               Pkgs = @("napari-skimage");     Extras = @();            Torch = $false }
+    @{ Key = "napari-tiff";      Label = "napari-tiff        TIFF / OME-TIFF reader, lists of files + multi-position (alandolt fork, git)"; Pkgs = @("napari-tiff @ git+https://github.com/alandolt/napari-tiff.git@main"); Extras = @(); Torch = $false }
     @{ Key = "timestamper";      Label = "timestamper        time stamps / scale bars on videos (napari-timestamper)";      Pkgs = @("napari-timestamper"); Extras = @();            Torch = $false }
     @{ Key = "jupyter";          Label = "Jupyter Notebook   notebooks with the bundle's Python (jupyter-notebook.bat)";    Pkgs = @("notebook");           Extras = @();            Torch = $false }
     @{ Key = "ipykernel";        Label = "ipykernel          notebooks in VS Code etc. with the bundle's Python as kernel"; Pkgs = @("ipykernel");          Extras = @();            Torch = $false }
@@ -72,9 +74,9 @@ $Catalog = @(
     @{ Key = "pertzlab-widgets"; Label = "pertzlab widgets   pymmcore-widgets with stage map / continuous focus (git build)"; Pkgs = @();                 Extras = @("pertzlab-widgets"); Torch = $false }
 )
 $DefaultPlugins = @{
-    aoki     = @("cellpose", "convpaint", "skimage", "timestamper", "jupyter", "ipykernel", "pertzlab-widgets")
-    pertzlab = @("cellpose", "convpaint", "skimage", "timestamper", "jupyter", "ipykernel", "pertzlab-widgets")
-    other    = @("cellpose", "convpaint", "skimage", "timestamper", "jupyter", "ipykernel")
+    aoki     = @("cellpose", "convpaint", "skimage", "napari-tiff", "timestamper", "jupyter", "ipykernel", "pertzlab-widgets")
+    pertzlab = @("cellpose", "convpaint", "skimage", "napari-tiff", "timestamper", "jupyter", "ipykernel", "pertzlab-widgets")
+    other    = @("cellpose", "convpaint", "skimage", "napari-tiff", "timestamper", "jupyter", "ipykernel")
 }
 
 # ---------------------------------------------------------------- prompts
@@ -199,7 +201,12 @@ Write-Host "Lab package: $LabPkg ($LabDir), microscopes: $($scopes -join ', ')"
 
 # ---------------------------------------------------------------- 3. options
 if ($null -eq $Plugins) {
-    $def = if ($last) { @($last.Plugins) } else { $DefaultPlugins[$LabKey] }
+    $def = if ($last) {
+        # The last choices; options added to the builder since then get their
+        # default (bundle-config.json from before "Offered" knew all but napari-tiff)
+        $offered = if ($last.Offered) { @($last.Offered) } else { @($Catalog.Key | Where-Object { $_ -ne "napari-tiff" }) }
+        @($last.Plugins) + @($DefaultPlugins[$LabKey] | Where-Object { $offered -notcontains $_ })
+    } else { $DefaultPlugins[$LabKey] }
     $Plugins = AskToggles "Plugins and extras in the bundle:" $Catalog $def
 }
 $Plugins = @($Plugins | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
@@ -267,7 +274,7 @@ if (-not $Yes) {
 [IO.File]::WriteAllText($cfgFile, (@{
     Lab = $Lab; LabUrl = $LabUrl; LabBranch = $LabBranch; Plugins = $Plugins; ExtraPackages = $ExtraPackages
     MMApi = $MMApi; Torch = $Torch; Microscope = $Microscope; FaroUrl = $FaroUrl; FaroBranch = $FaroBranch
-    Package = $Package; Clone = $Clone
+    Package = $Package; Clone = $Clone; Offered = @($Catalog.Key)
 } | ConvertTo-Json), $NoBom)
 
 # ---------------------------------------------------------------- 4. uv + Python
@@ -434,7 +441,9 @@ Install on the microscope PC (not in the bundle)
 Start
   faro-napari.bat              double-click: $(if ($Microscope) { "starts $Microscope" } else { "lists the microscopes and asks" })
                                (change: the MICROSCOPE line at the top of the file)
-  faro-napari.bat <microscope> a specific microscope$(if ($Plugins -contains 'jupyter') { "`n  jupyter-notebook.bat         Jupyter Notebook with this Python" })$(if ($Plugins -contains 'ipykernel') { "`n  VS Code notebooks:           python\python.exe is set as interpreter and kernel
+  faro-napari.bat <microscope> a specific microscope
+  napari.bat                   plain napari with all plugins, no microscope
+                               (drag image files onto it to open them)$(if ($Plugins -contains 'jupyter') { "`n  jupyter-notebook.bat         Jupyter Notebook with this Python" })$(if ($Plugins -contains 'ipykernel') { "`n  VS Code notebooks:           python\python.exe is set as interpreter and kernel
                                (.vscode\settings.json in this folder, faro\, $LabDir\ and examples\)" })
   python-shell.bat             command prompt with this Python:  python my_script.py
   PowerShell with the bundle's paths:  . .\env.ps1   then   python my_script.py
